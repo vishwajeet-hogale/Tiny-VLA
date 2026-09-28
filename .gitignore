@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Training runs, checkpoints, videos, eval results
+outputs/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
