@@ -5,7 +5,9 @@ same 20 seeded episodes. Then parses the training loss from the lerobot-train lo
 and success rate against training step on one figure, and saves 2 videos from the best checkpoint.
 
     python scripts/eval_checkpoints.py
-Writes to outputs/part3/:
+    python scripts/eval_checkpoints.py --run-dir outputs/part3/long/act_pusht \
+        --train-log outputs/part3/long/logs/train.log --out-dir outputs/part3/long
+Writes to --out-dir (default outputs/part3/):
     checkpoint_eval.csv           one row per checkpoint
     checkpoint_eval_episodes.csv  one row per episode
     loss_vs_success.png
@@ -68,12 +70,17 @@ def parse_train_log(log_path: Path, log_freq: int) -> dict[str, np.ndarray]:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default=None, help="torch device (default: cuda, error if unavailable)")
+    parser.add_argument("--run-dir", type=Path, default=RUN_DIR, help="lerobot-train output_dir")
+    parser.add_argument("--train-log", type=Path, default=TRAIN_LOG, help="stdout of that lerobot-train run")
+    parser.add_argument("--out-dir", type=Path, default=OUT_DIR, help="where CSVs, the plot and videos go")
     args = parser.parse_args()
     device = get_device(args.device)
+    out_dir = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    checkpoints = find_checkpoints(RUN_DIR)
+    checkpoints = find_checkpoints(args.run_dir)
     if not checkpoints:
-        raise SystemExit(f"No checkpoints under {RUN_DIR}/checkpoints")
+        raise SystemExit(f"No checkpoints under {args.run_dir}/checkpoints")
     print(f"Checkpoints: {[step for step, _ in checkpoints]}, {len(SEEDS)} episodes each\n")
 
     env = make_env()
@@ -103,11 +110,11 @@ def main():
         torch.cuda.empty_cache()
 
     # Save CSVs.
-    with open(OUT_DIR / "checkpoint_eval.csv", "w", newline="") as f:
+    with open(out_dir / "checkpoint_eval.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(summary_rows[0]))
         writer.writeheader()
         writer.writerows({k: round(v, 4) if isinstance(v, float) else v for k, v in r.items()} for r in summary_rows)
-    with open(OUT_DIR / "checkpoint_eval_episodes.csv", "w", newline="") as f:
+    with open(out_dir / "checkpoint_eval_episodes.csv", "w", newline="") as f:
         names = ["step"] + [fl.name for fl in fields(EpisodeResult) if fl.name != "frames"]
         writer = csv.DictWriter(f, fieldnames=names)
         writer.writeheader()
@@ -115,7 +122,7 @@ def main():
 
     # Training loss from the log. log_freq comes from the config lerobot-train saved with the run.
     train_config = json.loads((checkpoints[-1][1] / "train_config.json").read_text())
-    log = parse_train_log(TRAIN_LOG, train_config["log_freq"])
+    log = parse_train_log(args.train_log, train_config["log_freq"])
     if log["step"][-1] != train_config["steps"]:
         print(f"WARNING: log ends at step {log['step'][-1]}, run was {train_config['steps']} steps "
               "(resumed or truncated log?), so loss steps may be off.")
@@ -150,16 +157,21 @@ def main():
     ax_loss.set_title("ACT on PushT: training loss vs rollout success")
     ax_loss.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig(OUT_DIR / "loss_vs_success.png", dpi=120)
-    print(f"Saved {OUT_DIR}/loss_vs_success.png, checkpoint_eval.csv, checkpoint_eval_episodes.csv")
+    fig.savefig(out_dir / "loss_vs_success.png", dpi=120)
+    print(f"Saved {out_dir}/loss_vs_success.png, checkpoint_eval.csv, checkpoint_eval_episodes.csv")
 
     # Videos from the best checkpoint: highest success, ties broken by coverage, then the later step.
     best = max(summary_rows, key=lambda r: (r["success_rate"], r["avg_max_coverage"], r["step"]))
     best_path = dict(checkpoints)[best["step"]]
     print(f"\nBest checkpoint: step {best['step']} ({best['success_rate']:.0%} success). Recording {N_VIDEOS} videos...")
     policy, preprocessor, postprocessor = load_pretrained(best_path, device)
-    video_dir = OUT_DIR / "videos" / f"best_{best['step']:06d}"
-    for seed in SEEDS[:N_VIDEOS]:
+    video_dir = out_dir / "videos" / f"best_{best['step']:06d}"
+    # Prefer one success and one failure, so the videos show both what works and what doesn't.
+    best_episodes = [e for e in episode_rows if e["step"] == best["step"]]
+    successes = [e["seed"] for e in best_episodes if e["success"]]
+    failures = [e["seed"] for e in best_episodes if not e["success"]]
+    video_seeds = (successes[:1] + failures[:1]) if successes and failures else SEEDS[:N_VIDEOS]
+    for seed in video_seeds:
         result, path = record_episode(policy, env, preprocessor, postprocessor, seed, video_dir)
         print(f"  seed {seed}: success={result.success} steps={result.steps} -> {path}")
     env.close()

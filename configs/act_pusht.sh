@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # Part 3: train ACT on PushT with lerobot-train (lerobot 0.6.1), on the 4GB RTX 3050.
 #
-# Run from the repo root with the venv active, inside tmux (it takes ~1.5-2 h):
+# Run from the repo root with the venv active, inside tmux (the defaults take ~50 min):
 #   tmux new -s act-train 'bash configs/act_pusht.sh'
 #
-# Also samples GPU utilization every 10 s into outputs/part3/logs/gpu.csv for the whole run.
+# The run size can be changed with environment variables (defaults = the first Part 3 run):
+#   BATCH_SIZE=32 STEPS=150000 SAVE_FREQ=10000 OUTPUT_DIR=outputs/part3/long/act_pusht \
+#     LOG_DIR=outputs/part3/long/logs bash configs/act_pusht.sh
+#
+# Also samples GPU utilization every 10 s into $LOG_DIR/gpu.csv for the whole run.
 set -euo pipefail
 
-OUTPUT_DIR=outputs/part3/act_pusht
-LOG_DIR=outputs/part3/logs
+OUTPUT_DIR=${OUTPUT_DIR:-outputs/part3/act_pusht}
+LOG_DIR=${LOG_DIR:-outputs/part3/logs}
+BATCH_SIZE=${BATCH_SIZE:-8}
+STEPS=${STEPS:-30000}
+SAVE_FREQ=${SAVE_FREQ:-5000}
 mkdir -p "$LOG_DIR"
 
 # Fail loudly if there is no CUDA, instead of lerobot quietly training on the CPU.
@@ -34,7 +41,7 @@ trap 'kill $GPU_LOGGER_PID 2>/dev/null || true' EXIT
 #   to the pretrained diffusion policy's 1.6 s horizon / 0.8 s executed.
 #   n_action_steps only affects inference, so it can still be changed at eval time.
 #
-# batch_size=8: the probe showed 64 fits in VRAM (2150 of 4096 MB), but the first run at 64 with
+# batch_size (default 8): the probe showed 64 fits in VRAM (2150 of 4096 MB), but the first run at 64 with
 #   2 dataloader workers crashed the whole WSL VM around step 700 from *system RAM* pressure
 #   (the laptop has 7.3 GB; WSL gets 3.5 GB). 8 is ACT's own default and uses 1910 MB VRAM.
 # num_workers=1, prefetch_factor=2: the real RAM cost is the worker processes, not the batch
@@ -53,11 +60,11 @@ lerobot-train \
   --dataset.repo_id=lerobot/pusht \
   --dataset.video_backend=pyav \
   --env.type=pusht \
-  --batch_size=8 \
+  --batch_size="$BATCH_SIZE" \
   --num_workers=1 \
   --prefetch_factor=2 \
-  --steps=30000 \
-  --save_freq=5000 \
+  --steps="$STEPS" \
+  --save_freq="$SAVE_FREQ" \
   --env_eval_freq=0 \
   --log_freq=100 \
   --wandb.enable=false \

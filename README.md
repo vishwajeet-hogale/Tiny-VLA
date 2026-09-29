@@ -20,7 +20,7 @@ including the parts LeRobot normally hides (observation mapping, normalization, 
 | Part | Topic | Status |
 |---|---|---|
 | 1 | Explore the `lerobot/pusht` dataset | Done |
-| 2 | Hand-written rollout loop for a pretrained diffusion policy, checked against `lerobot-eval` | Done (the full `n_action_steps` sweep is still to run) |
+| 2 | Hand-written rollout loop for a pretrained diffusion policy, checked against `lerobot-eval` | Done |
 | 3 | Train ACT on a 4 GB GPU and evaluate every checkpoint | Done (15% success; needs longer training) |
 
 ## Setup
@@ -87,6 +87,22 @@ queued: the big dot is the current target and the smaller dots are the upcoming 
 With 10 episodes, one episode is 10 points, so these agree. Every model call is 100 denoising
 passes of the U-Net, which is why action chunking matters: executing 8 actions per prediction
 cuts the model work 8x.
+
+**How many actions to execute per prediction** (`sweep_action_steps.py`, same 10 seeds):
+
+| n_action_steps | 1 | 4 | **8** | 16 (really 15) |
+|---|---|---|---|---|
+| success | 40% | 20% | **80%** | 40% |
+| avg max coverage | 0.93 | 0.82 | 0.91 | 0.84 |
+| model calls per episode | 265 | 67 | 29 | 16 |
+| seconds per episode | 607 | 156 | 68 | 37 |
+
+The checkpoint's own setting of 8 was clearly best. Executing 15 actions blind reacts too slowly,
+but re-planning *more* often was also worse: every chunk starts from fresh random noise, so frequent
+re-planning keeps switching strategies instead of committing to one. At `n=1` the policy got the
+block almost into place (the highest coverage) but often dithered just short of the 95% success
+line, at 16x the cost of `n=16`. With 10 episodes per setting, only the gap between 8 and the rest
+is clearly real.
 
 ## Part 3: training ACT
 
