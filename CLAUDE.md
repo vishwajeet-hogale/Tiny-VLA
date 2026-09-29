@@ -7,7 +7,8 @@ scripts over clever abstractions, and explain non-obvious code.
 
 ## Pinned versions
 - Python 3.12 managed with `uv` (`uv sync`, `uv run python ...`)
-- `lerobot[pusht]==0.6.1`, pinned exactly in `pyproject.toml`
+- `lerobot[pusht,diffusion,training]==0.6.1`, pinned exactly in `pyproject.toml`
+- A uv override in `pyproject.toml` keeps a single OpenCV (the GUI build, 4.13.0.92); don't remove it
 
 ## Rule: check the installed source, don't assume
 Always check the installed lerobot source for APIs rather than assuming from memory, since the

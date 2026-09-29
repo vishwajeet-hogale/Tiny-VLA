@@ -1,4 +1,4 @@
-"""Watch the pretrained diffusion policy play PushT.
+"""Watch a policy play PushT (default: the pretrained diffusion policy from Part 2).
 
 If a display is available ($DISPLAY is set) the rollout plays live in an OpenCV window:
     q  quit
@@ -11,6 +11,7 @@ executing: the big red dot is this step's target, smaller dots are the queued fu
 
     python scripts/watch.py                      # live window, seeds 1000, 1001, ...
     python scripts/watch.py --save --episodes 3  # MP4s instead
+    python scripts/watch.py --policy-path outputs/part3/act_pusht/checkpoints/030000/pretrained_model
 """
 
 import argparse
@@ -18,42 +19,14 @@ import os
 from pathlib import Path
 
 import cv2
-import numpy as np
 
-from lerobot.utils.io_utils import write_video
 from tiny_vla.device import get_device
-from tiny_vla.policy import load_policy
+from tiny_vla.policy import POLICY_DIR, load_pretrained
 from tiny_vla.rollout import make_env, run_episode
+from tiny_vla.video import draw_overlay, record_episode
 
 VIDEO_DIR = Path("outputs/part2/videos")
 WINDOW = "tiny-vla: PushT"
-
-
-def draw_overlay(frame: np.ndarray, info: dict) -> np.ndarray:
-    """Return a copy of an RGB frame with the text and action-chunk dots drawn on it."""
-    frame = frame.copy()
-    height, width = frame.shape[:2]
-
-    # Actions are in the sim's 512x512 coordinates; the rendered frame is smaller, so scale.
-    chunk = info["chunk"]
-    if chunk is not None:
-        for i, (x, y) in reversed(list(enumerate(chunk))):  # draw the current target last (on top)
-            center = (int(x / 512 * width), int(y / 512 * height))
-            if i == 0:
-                cv2.circle(frame, center, 7, (220, 30, 30), -1)
-            else:
-                fade = i / max(len(chunk) - 1, 1)  # 0 = next action ... 1 = furthest ahead
-                cv2.circle(frame, center, 4, (255, int(140 + 100 * fade), 0), -1)
-
-    lines = [
-        f"step {info['step']}",
-        f"reward {info['reward']:.2f}  coverage {info['coverage']:.0%}",
-    ]
-    for row, text in enumerate(lines):
-        origin = (8, 22 + 22 * row)
-        cv2.putText(frame, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(frame, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
-    return frame
 
 
 def watch_in_window(policy, env, preprocessor, postprocessor, seed: int, delay_ms: int):
@@ -77,18 +50,9 @@ def watch_in_window(policy, env, preprocessor, postprocessor, seed: int, delay_m
     cv2.destroyAllWindows()
 
 
-def save_videos(policy, env, preprocessor, postprocessor, seed: int, episodes: int):
-    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+def save_videos(policy, env, preprocessor, postprocessor, seed: int, episodes: int, out_dir: Path):
     for seed in range(seed, seed + episodes):
-        frames = []
-
-        def collect(frame, info) -> bool:  # draw the overlay on each frame as it is rendered
-            frames.append(draw_overlay(frame, info))
-            return False
-
-        result = run_episode(policy, env, preprocessor, postprocessor, seed, render=True, on_step=collect)
-        path = VIDEO_DIR / f"seed_{seed}_{'success' if result.success else 'fail'}.mp4"
-        write_video(path, frames, fps=env.metadata["render_fps"])
+        result, path = record_episode(policy, env, preprocessor, postprocessor, seed, out_dir)
         print(f"seed {seed}: success={result.success} steps={result.steps} "
               f"max_coverage={result.max_coverage:.0%} -> {path}")
 
@@ -100,17 +64,19 @@ def main():
     parser.add_argument("--save", action="store_true", help="save MP4s even if a display is available")
     parser.add_argument("--episodes", type=int, default=1, help="episodes to save in MP4 mode")
     parser.add_argument("--delay-ms", type=int, default=50, help="pause per frame in window mode")
+    parser.add_argument("--policy-path", default=str(POLICY_DIR), help="policy folder (config + weights + processors)")
+    parser.add_argument("--video-dir", default=str(VIDEO_DIR), help="where MP4s go in save mode")
     args = parser.parse_args()
 
-    policy, preprocessor, postprocessor = load_policy(get_device(args.device))
+    policy, preprocessor, postprocessor = load_pretrained(args.policy_path, get_device(args.device))
     env = make_env()
 
     if os.environ.get("DISPLAY") and not args.save:
         print(f"DISPLAY={os.environ['DISPLAY']}: opening a window (q quit, r reset)")
         watch_in_window(policy, env, preprocessor, postprocessor, args.seed, args.delay_ms)
     else:
-        print(f"No display (or --save): writing MP4s to {VIDEO_DIR}/")
-        save_videos(policy, env, preprocessor, postprocessor, args.seed, args.episodes)
+        print(f"No display (or --save): writing MP4s to {args.video_dir}/")
+        save_videos(policy, env, preprocessor, postprocessor, args.seed, args.episodes, Path(args.video_dir))
     env.close()
 
 

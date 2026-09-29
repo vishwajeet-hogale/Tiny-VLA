@@ -1,4 +1,4 @@
-"""A hand-written rollout loop for the PushT diffusion policy.
+"""A hand-written rollout loop for PushT policies (the pretrained diffusion policy, and ACT).
 
 This is a single-env version of `rollout()` in lerobot/scripts/lerobot_eval.py, written out
 step by step so every conversion between the simulator and the policy is visible.
@@ -56,7 +56,7 @@ class EpisodeResult:
     max_reward: float  # best reward; PushT reward is min(coverage / 0.95, 1)
     sum_reward: float
     chunk_predictions: int  # times the policy ran the model to predict a new action chunk
-    denoise_passes: int  # U-Net forward passes (each chunk = num_inference_steps passes)
+    denoise_passes: int | None  # diffusion only: U-Net passes (num_inference_steps per chunk)
     wall_time_s: float
     peak_vram_mb: float | None  # None when not on cuda
     frames: list[np.ndarray] = field(default_factory=list, repr=False)  # filled when render=True
@@ -76,14 +76,34 @@ class _CallCounter:
         self._handle.remove()
 
 
+def _instrumented_modules(policy) -> tuple[torch.nn.Module, torch.nn.Module | None]:
+    """(module that runs once per chunk prediction, module that runs once per denoising step).
+
+    Diffusion: the image encoder runs once per chunk (on the 2 stacked frames) and the U-Net
+               runs num_inference_steps times per chunk.
+    ACT:       the whole ACT model runs once per chunk; there is no denoising loop.
+    """
+    if policy.name == "diffusion":
+        return policy.diffusion.rgb_encoder, policy.diffusion.unet
+    if policy.name == "act":
+        return policy.model, None
+    raise NotImplementedError(f"No instrumentation for policy type {policy.name!r}")
+
+
+def _action_queue(policy):
+    """The policy's private queue of not-yet-executed actions (each normalized, shape (batch, 2))."""
+    if policy.name == "diffusion":
+        return policy._queues["action"]  # lerobot/policies/diffusion/modeling_diffusion.py
+    return policy._action_queue  # lerobot/policies/act/modeling_act.py
+
+
 def planned_actions(policy, postprocessor) -> np.ndarray:
     """The actions still waiting in the policy's queue, in env coordinates, shape (n, 2).
 
-    Reads the private `_queues` attribute (lerobot/policies/diffusion/modeling_diffusion.py).
-    Queued actions are still normalized to [-1, 1], so they go through the postprocessor
-    (the same unnormalize step every executed action gets).
+    Reads a private attribute (see _action_queue). Queued actions are still normalized, so they
+    go through the postprocessor (the same unnormalize step every executed action gets).
     """
-    queue = policy._queues["action"]
+    queue = _action_queue(policy)
     if len(queue) == 0:
         return np.zeros((0, 2))
     chunk = torch.stack(list(queue))  # (n, batch=1, 2)
@@ -111,11 +131,11 @@ def run_episode(
     if on_cuda:
         torch.cuda.reset_peak_memory_stats(device)
 
-    # Count model work with forward hooks, so the lerobot code doesn't need to be modified:
-    #  - rgb_encoder runs once per chunk prediction (encodes the 2 stacked camera frames)
-    #  - unet runs once per denoising step (num_inference_steps times per chunk)
-    chunk_counter = _CallCounter(policy.diffusion.rgb_encoder)
-    denoise_counter = _CallCounter(policy.diffusion.unet)
+    # Count model work with forward hooks, so the lerobot code doesn't need to be modified
+    # (which modules are hooked depends on the policy type, see _instrumented_modules).
+    chunk_module, denoise_module = _instrumented_modules(policy)
+    chunk_counter = _CallCounter(chunk_module)
+    denoise_counter = _CallCounter(denoise_module) if denoise_module is not None else None
 
     # Seed torch too: diffusion starts every chunk from random noise, so without this the same
     # env seed could give a different episode each run.
@@ -152,10 +172,11 @@ def run_episode(
         #    image with the dataset mean/std, so the model sees inputs just like in training.
         batch = preprocessor(batch)
 
-        # 4. Choose an action. select_action keeps the last 2 observations in a queue. When its
-        #    action queue is empty it runs the diffusion model (100 denoising passes) to predict a
-        #    16-step chunk and queues n_action_steps of them; otherwise it just pops the next queued
-        #    action with no model call. inference_mode skips autograd bookkeeping.
+        # 4. Choose an action. When the policy's action queue is empty it runs the model to predict
+        #    a chunk of future actions and queues the first n_action_steps of them; otherwise it just
+        #    pops the next queued action with no model call. (Diffusion also keeps the last 2
+        #    observations and runs 100 denoising passes per chunk; ACT uses 1 observation and one
+        #    forward pass.) inference_mode skips autograd bookkeeping.
         with torch.inference_mode():
             action = policy.select_action(batch)  # (1, 2), normalized
 
@@ -181,7 +202,8 @@ def run_episode(
 
     wall_time = time.perf_counter() - start
     chunk_counter.remove()
-    denoise_counter.remove()
+    if denoise_counter is not None:
+        denoise_counter.remove()
 
     return EpisodeResult(
         seed=seed,
@@ -191,7 +213,7 @@ def run_episode(
         max_reward=max(rewards),
         sum_reward=sum(rewards),
         chunk_predictions=chunk_counter.count,
-        denoise_passes=denoise_counter.count,
+        denoise_passes=denoise_counter.count if denoise_counter is not None else None,
         wall_time_s=wall_time,
         peak_vram_mb=torch.cuda.max_memory_allocated(device) / 2**20 if on_cuda else None,
         frames=frames,
