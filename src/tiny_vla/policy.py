@@ -11,7 +11,7 @@ from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 POLICY_DIR = Path("outputs/models/diffusion_pusht")
 
 
-def load_pretrained(path: str | Path, device: torch.device, n_action_steps: int | None = None):
+def load_pretrained(path: str | Path, device: torch.device, n_action_steps: int | None = None, **config_overrides):
     """Load any policy folder that has config.json, model.safetensors and processor files.
 
     Works for the converted diffusion checkpoint and for lerobot-train checkpoints
@@ -19,6 +19,8 @@ def load_pretrained(path: str | Path, device: torch.device, n_action_steps: int 
 
     n_action_steps: how many actions from each predicted chunk to execute before predicting
     again. None keeps the checkpoint's value.
+    config_overrides: any other config fields to change before the model is built, e.g.
+    noise_scheduler_type="DDIM", num_inference_steps=10 for a diffusion policy.
     """
     path = Path(path)
     if not (path / "policy_preprocessor.json").exists():
@@ -32,6 +34,10 @@ def load_pretrained(path: str | Path, device: torch.device, n_action_steps: int 
         # n_action_steps is only read when the action queue is created (policy.reset()) and when
         # a predicted chunk is sliced, so it can differ from training.
         config.n_action_steps = n_action_steps
+    for key, value in config_overrides.items():
+        if not hasattr(config, key):
+            raise ValueError(f"{type(config).__name__} has no field {key!r}")
+        setattr(config, key, value)
 
     policy = get_policy_class(config.type).from_pretrained(path, config=config)
     policy.eval()
