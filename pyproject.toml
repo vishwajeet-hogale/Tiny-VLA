@@ -8,6 +8,7 @@ dependencies = [
     # Pinned exactly: the LeRobot API changes between versions.
     "lerobot[pusht,diffusion,training]==0.6.1",
     "matplotlib>=3.11.2",
+    "tensorboard>=2.21.0",
 ]
 
 [build-system]

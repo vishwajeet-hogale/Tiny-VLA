@@ -17,7 +17,7 @@ DiffusionModel.generate_actions: actions[:, 1:1 + n_action_steps] on a length-16
 
 import argparse
 import csv
-from dataclasses import asdict, fields
+
 from pathlib import Path
 
 import matplotlib
@@ -58,7 +58,7 @@ for n in args.values:
             f"denoise={r.denoise_passes:<5} time={r.wall_time_s:.1f}s vram={r.peak_vram_mb or 0:.0f}MB",
             flush=True,
         )
-        row = {k: v for k, v in asdict(r).items() if k != "frames"}
+        row = r.row()
         episode_rows.append({"n_action_steps": n, **row})
 
     vram = [r.peak_vram_mb for r in results if r.peak_vram_mb is not None]
@@ -82,7 +82,7 @@ for n in args.values:
 # Save CSVs, sorted by n_action_steps regardless of the order the values ran in.
 summary_rows.sort(key=lambda row: row["n_action_steps"])
 episode_rows.sort(key=lambda row: (row["n_action_steps"], row["seed"]))
-episode_fields = ["n_action_steps"] + [f.name for f in fields(EpisodeResult) if f.name != "frames"]
+episode_fields = list(episode_rows[0])
 with open(OUT_DIR / "sweep_episodes.csv", "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=episode_fields)
     writer.writeheader()

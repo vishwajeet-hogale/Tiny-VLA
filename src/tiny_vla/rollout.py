@@ -6,7 +6,7 @@ step by step so every conversion between the simulator and the policy is visible
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import gymnasium as gym
 import numpy as np
@@ -59,7 +59,13 @@ class EpisodeResult:
     denoise_passes: int | None  # diffusion only: U-Net passes (num_inference_steps per chunk)
     wall_time_s: float
     peak_vram_mb: float | None  # None when not on cuda
+    mean_chunk_latency_ms: float = float("nan")  # GPU-synced time of a select_action call that ran the model
+    actions: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)), repr=False)  # (steps, 2) executed targets
     frames: list[np.ndarray] = field(default_factory=list, repr=False)  # filled when render=True
+
+    def row(self) -> dict:
+        """The scalar fields, for one CSV row (drops the actions array and rendered frames)."""
+        return {k: v for k, v in asdict(self).items() if k not in ("actions", "frames")}
 
 
 class _CallCounter:
@@ -148,6 +154,8 @@ def run_episode(
 
     frames = []
     coverages, rewards = [0.0], [0.0]
+    executed_actions = []
+    chunk_latencies = []
     success = False
     steps = 0
 
@@ -177,13 +185,24 @@ def run_episode(
         #    pops the next queued action with no model call. (Diffusion also keeps the last 2
         #    observations and runs 100 denoising passes per chunk; ACT uses 1 observation and one
         #    forward pass.) inference_mode skips autograd bookkeeping.
+        #    Timing: CUDA runs asynchronously, so synchronize before reading the clock, and only
+        #    keep the calls that actually ran the model (the chunk counter went up).
+        calls_before = chunk_counter.count
+        if on_cuda:
+            torch.cuda.synchronize(device)
+        t_call = time.perf_counter()
         with torch.inference_mode():
             action = policy.select_action(batch)  # (1, 2), normalized
+        if on_cuda:
+            torch.cuda.synchronize(device)
+        if chunk_counter.count > calls_before:
+            chunk_latencies.append((time.perf_counter() - t_call) * 1000)
 
         # 5. Postprocess: undo the action normalization ([-1, 1] -> 0..512 pixel coords) and
         #    move back to the CPU.
         action = postprocessor(action)
         action_np = action[0].numpy()  # (2,): the env takes one unbatched (x, y) target
+        executed_actions.append(action_np)
 
         # 6. Step the sim. The action is a target position; the env's PD controller pulls the
         #    agent toward it for 0.1 s. reward = min(coverage / 0.95, 1); terminated means the
@@ -216,5 +235,7 @@ def run_episode(
         denoise_passes=denoise_counter.count if denoise_counter is not None else None,
         wall_time_s=wall_time,
         peak_vram_mb=torch.cuda.max_memory_allocated(device) / 2**20 if on_cuda else None,
+        mean_chunk_latency_ms=float(np.mean(chunk_latencies)) if chunk_latencies else float("nan"),
+        actions=np.array(executed_actions).reshape(-1, 2),
         frames=frames,
     )

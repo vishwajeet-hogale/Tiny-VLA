@@ -18,7 +18,7 @@ import argparse
 import csv
 import json
 import re
-from dataclasses import asdict, fields
+
 from pathlib import Path
 
 import matplotlib
@@ -91,7 +91,7 @@ def main():
         for seed in SEEDS:
             r = run_episode(policy, env, preprocessor, postprocessor, seed)
             results.append(r)
-            episode_rows.append({"step": step, **{k: v for k, v in asdict(r).items() if k != "frames"}})
+            episode_rows.append({"step": step, **r.row()})
         summary_rows.append(
             {
                 "step": step,
@@ -115,8 +115,7 @@ def main():
         writer.writeheader()
         writer.writerows({k: round(v, 4) if isinstance(v, float) else v for k, v in r.items()} for r in summary_rows)
     with open(out_dir / "checkpoint_eval_episodes.csv", "w", newline="") as f:
-        names = ["step"] + [fl.name for fl in fields(EpisodeResult) if fl.name != "frames"]
-        writer = csv.DictWriter(f, fieldnames=names)
+        writer = csv.DictWriter(f, fieldnames=list(episode_rows[0]))
         writer.writeheader()
         writer.writerows(episode_rows)
 
